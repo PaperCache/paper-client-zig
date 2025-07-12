@@ -373,6 +373,84 @@ pub const PaperClient = struct {
 	}
 };
 
+pub const PaperPool = struct {
+	_clients: []LockableClient,
+	_index: usize,
+	_index_lock: std.Thread.Mutex,
+
+	pub fn init(
+		allocator: std.mem.Allocator,
+		paper_addr: []const u8,
+		size: usize,
+	) PaperError!PaperPool {
+		const clients = allocator.alloc(LockableClient, size) catch {
+			return PaperError.Internal;
+		};
+
+		for (0..size) |i| {
+			clients[i] = try LockableClient.init(allocator, paper_addr);
+		}
+
+		return PaperPool {
+			._clients = clients,
+			._index = 0,
+			._index_lock = .{},
+		};
+	}
+
+	pub fn disconnect(self: PaperPool) void {
+		for (0..self._clients.len) |i| {
+			var c = self._clients[i].lock();
+			defer self._clients[i].unlock();
+
+			c.disconnect();
+		}
+	}
+
+	pub fn auth(self: *PaperPool, token: []const u8) PaperError!void {
+		for (0..self._clients.len) |i| {
+			var c = self._clients[i].lock();
+			defer self._clients[i].unlock();
+
+			try c.auth(token);
+		}
+	}
+
+	pub fn client(self: *PaperPool) *LockableClient {
+		self._index_lock.lock();
+		defer self._index_lock.unlock();
+
+		const lockable = &self._clients[self._index];
+		self._index = (self._index + 1) % self._clients.len;
+
+		return lockable;
+	}
+};
+
+pub const LockableClient = struct {
+	_client: PaperClient,
+	_mutex: std.Thread.Mutex,
+
+	pub fn init(
+		allocator: std.mem.Allocator,
+		paper_addr: []const u8,
+	) PaperError!LockableClient {
+		return LockableClient {
+			._client = try PaperClient.init(allocator, paper_addr),
+			._mutex = .{},
+		};
+	}
+
+	pub fn lock(self: *LockableClient) *PaperClient {
+		self._mutex.lock();
+		return &self._client;
+	}
+
+	pub fn unlock(self: *LockableClient) void {
+		self._mutex.unlock();
+	}
+};
+
 const Command = enum(u8) {
 	ping = 0,
 	version = 1,
@@ -689,6 +767,33 @@ test "stats" {
 
 	const stats = try client.stats();
 	try std.testing.expect(stats.uptime > 0);
+}
+
+test "pool" {
+	var heap = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+	const allocator = heap.allocator();
+
+	var pool = try PaperPool.init(allocator, "paper://127.0.0.1:3145", 2);
+	defer pool.disconnect();
+
+	{
+		var lockable = pool.client();
+		var client = lockable.lock();
+		defer lockable.unlock();
+
+		const res = client.set("hello", "world", null);
+		try std.testing.expectError(PaperError.Unauthorized, res);
+	}
+
+	try pool.auth("auth_token");
+
+	{
+		var lockable = pool.client();
+		var client = lockable.lock();
+		defer lockable.unlock();
+
+		try client.set("hello", "world", null);
+	}
 }
 
 fn getCacheSize(client: *PaperClient) PaperError!u64 {
