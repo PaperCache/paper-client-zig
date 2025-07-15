@@ -1,7 +1,7 @@
 const std = @import("std");
 const tcp = @import("tcp_client.zig");
 const PaperError = @import("error.zig").PaperError;
-const PaperStats = @import("stats.zig").PaperStats;
+const PaperStatus = @import("status.zig").PaperStatus;
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 3;
 
@@ -215,13 +215,13 @@ pub const PaperClient = struct {
 		return self.process();
 	}
 
-	pub fn stats(self: *PaperClient) PaperError!PaperStats {
-		self._tcp_client.writer().writeU8(@intFromEnum(Command.stats)) catch {
+	pub fn status(self: *PaperClient) PaperError!PaperStatus {
+		self._tcp_client.writer().writeU8(@intFromEnum(Command.status)) catch {
 			try self.reconnect();
-			return self.stats();
+			return self.status();
 		};
 
-		return self.processStats();
+		return self.processStatus();
 	}
 
 	pub fn disconnect(self: PaperClient) void {
@@ -270,7 +270,7 @@ pub const PaperClient = struct {
 		return try reader.readU32();
 	}
 
-	fn processStats(self: *PaperClient) PaperError!PaperStats {
+	fn processStatus(self: *PaperClient) PaperError!PaperStatus {
 		const reader = self._tcp_client.reader();
 		const is_ok = try reader.readBool();
 
@@ -278,9 +278,14 @@ pub const PaperClient = struct {
 			return self.processError();
 		}
 
+		const pid = try reader.readU32();
+
 		const max_size = try reader.readU64();
 		const used_size = try reader.readU64();
 		const num_objects = try reader.readU64();
+
+		const rss = try reader.readU64();
+		const hwm = try reader.readU64();
 
 		const total_gets = try reader.readU64();
 		const total_sets = try reader.readU64();
@@ -305,10 +310,15 @@ pub const PaperClient = struct {
 
 		const uptime = try reader.readU64();
 
-		return PaperStats {
+		return PaperStatus {
+			.pid = pid,
+
 			.max_size = max_size,
 			.used_size = used_size,
 			.num_objects = num_objects,
+
+			.rss = rss,
+			.hwm = hwm,
 
 			.total_gets = total_gets,
 			.total_sets = total_sets,
@@ -471,7 +481,7 @@ const Command = enum(u8) {
 	resize = 11,
 	policy = 12,
 
-	stats = 13,
+	status = 13,
 };
 
 fn handshake(tcp_client: *tcp.TcpClient) PaperError!void {
@@ -755,7 +765,7 @@ test "policy" {
 	try std.testing.expectEqualStrings(UPDATED_POLICY_ID, try getCachePolicyId(&client));
 }
 
-test "stats" {
+test "status" {
 	var heap = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 	const allocator = heap.allocator();
 
@@ -765,8 +775,8 @@ test "stats" {
 	try client.auth("auth_token");
 	try client.wipe();
 
-	const stats = try client.stats();
-	try std.testing.expect(stats.uptime > 0);
+	const status = try client.status();
+	try std.testing.expect(status.uptime > 0);
 }
 
 test "pool" {
@@ -797,11 +807,11 @@ test "pool" {
 }
 
 fn getCacheSize(client: *PaperClient) PaperError!u64 {
-	const stats = try client.stats();
-	return stats.max_size;
+	const status = try client.status();
+	return status.max_size;
 }
 
 fn getCachePolicyId(client: *PaperClient) PaperError![]u8 {
-	const stats = try client.stats();
-	return stats.policy_id;
+	const status = try client.status();
+	return status.policy_id;
 }

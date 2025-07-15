@@ -1,7 +1,12 @@
-pub const PaperStats = struct {
+pub const PaperStatus = struct {
+	pid: u32,
+
 	max_size: u64,
 	used_size: u64,
 	num_objects: u64,
+
+	rss: u64,
+	hwm: u64,
 
 	total_gets: u64,
 	total_sets: u64,
